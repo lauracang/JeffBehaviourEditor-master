@@ -1,0 +1,989 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+<script src="assets/js/jquery-1.11.2.min.js"></script>
+<link rel="stylesheet" href="assets/css/jquery-ui.css">
+  <script src="assets/js/jquery-ui.js"></script>
+  <script src="assets/js/jquery.ui.touch-punch.min.js"></script>
+  <link rel="stylesheet" href="assets/css/bootstrap.min.css"></script>
+  <script src="assets/js/bootstrap.min.js"></script>
+  <link rel="assets/js/style.css">
+
+
+
+  <style>
+      .actuatorCommand { width: 71px; height: 71px; position: absolute;}
+      #actuatorCommand .ui-selected { background: #F39814; color: white; }
+      .trackCreationHint { pointer-events: none; width: 71px; height: 71px; position: absolute; background-color: gray; opacity: .5; }
+      .timeLineSweep { z-index: 1000; width: 4px; height: 100%; position: absolute; background-color: red; opacity: .5; }
+      .actuatorTrack { height:80px; border:2px solid #ccc; padding: 2px; }
+      .behaviourSelector { width:240px; font-size: x-large; }
+      .gestureControl { padding: 2px; border:2px solid #ccc; }
+      .gestureControlButton { font-size: x-large; float:top;}
+      h3 { clear: left; }
+  </style>
+
+
+    <script>
+
+
+        var selectedCmdID = null;
+        var prevSelectedCmdID = null;
+        var trackLists = {};
+        var trackCounts = {};
+        var idToCmdMap = {};
+
+        var trackCreationHint = $("<div></div>", {
+            class: 'trackCreationHint',
+            id: 'trackCreationHint',
+            style: 'display: none;'
+        });
+        var showTrackCreationHint = true;
+
+        var currBehaviour = [];
+        var currCmdIndex = 0;
+        var behaviourPlaying = false;
+
+        var maxDurationMS = 5000;
+        var defaultDurationMS = 1000;
+
+        var sweepMouseDown = false;
+
+        var behNameToCmdListMap = {};
+        var gestureToBehMap = {};
+
+        var recognizedGesture = '';
+
+
+
+        $(function() {
+            $( "#durationSlider" ).slider({
+              min: 0,
+              max: maxDurationMS,
+              value: defaultDurationMS,
+              slide: function( event, ui ) {
+                $( "#durationValue" ).val( ui.value + ' ms');
+
+                if( selectedCmdID !== null && selectedCmdID !== undefined ){
+                    idToCmdMap[selectedCmdID].setPoints[0] = ui.value;
+
+                    var timeline = $('#TimeLine');
+                    var trackWidth = timeline.width();
+                    var pixelsPerMS = maxDurationMS / trackWidth;
+
+                    $("#" + selectedCmdID).width( ui.value / pixelsPerMS );
+                }
+              }
+            });
+            $( "#durationValue" ).val( $( "#durationSlider" ).slider( "value" ) + ' ms');
+
+            $( "#positionSlider" ).slider({
+              min: 0,
+              max: 100,
+              value: 50,
+              slide: function( event, ui ) {
+                $( "#positionValue" ).val( ui.value + ' ms');
+
+                if( selectedCmdID !== null && selectedCmdID !== undefined ){
+                    idToCmdMap[selectedCmdID].setPoints[1] = Math.round(ui.value / 100.0 * 65535);
+                }
+              }
+
+            });
+        });
+
+
+    $(function(){
+        var timeline = $('#TimeLine');
+        var sweep = $('#timeLineSweep');
+        var trackWidth = timeline.width();
+        var pixelsPerMS = maxDurationMS / trackWidth;
+
+        sweep.draggable({ containment: '#TimeLine', scroll: false, axis: "x" });
+        sweep.css('left', $('.actuatorTrack').position().left);
+        sweep.mousedown(function( event ) {
+            sweepMouseDown = true;
+        });
+
+        sweep.mouseup(function(event){
+            sweepMouseDown = false;
+        });
+    });
+
+
+    $(function(){
+        $('#loop').change(function( event ) {
+            if( selectedCmdID !== null && selectedCmdID !== undefined ){
+                idToCmdMap[selectedCmdID].loop = parseInt($( "#loop" ).val());
+            }
+        });
+
+        // $('#loop').focusout(function( event ) {
+
+        //     console.log("loop focusout")
+
+        //     if( prevSelectedCmdID !== null && prevSelectedCmdID !== undefined ){
+        //         idToCmdMap[prevSelectedCmdID].loop = parseInt($( "#loop" ).val());
+        //     }
+        // });
+    });
+
+
+    $(function(){
+        $('#delay').change(function( event ) {
+            if( selectedCmdID !== null && selectedCmdID !== undefined ){
+                idToCmdMap[selectedCmdID].delay = parseInt($( "#delay" ).val());
+            }
+        });
+
+        // $('#delay').focusout(function( event ) {
+
+        //     console.log("delay focusout")
+
+        //     if( prevSelectedCmdID !== null && prevSelectedCmdID !== undefined ){
+        //         idToCmdMap[prevSelectedCmdID].delay = parseInt($( "#delay" ).val());
+        //     }
+        // });
+    });
+
+  function setselectedCmdID(commandID)
+  {
+    if( selectedCmdID !== null && selectedCmdID !== undefined ){
+
+        console.log('deselecting ' + selectedCmdID);
+        $('#' + selectedCmdID.id + '_closeButton').css('display', 'none');
+    }
+
+    prevSelectedCmdID = selectedCmdID;
+    selectedCmdID = commandID;
+
+    if( selectedCmdID !== null && selectedCmdID !== undefined ){
+
+        data = idToCmdMap[selectedCmdID];
+
+        console.log('data: ' + JSON.stringify(data));
+
+
+        $('#actuatorType').val(data.addr);
+        $('#delay').val(data.delay);
+        $('#loop').val(data.loop);
+        $('#durationSlider').slider( "value", data.setPoints[0] );
+        $( "#durationValue" ).val( data.setPoints[0] + ' ms');
+        $('#positionSlider').slider( "value", data.setPoints[1] / 65535.0 * 100 );
+    }
+  }
+
+  function addTrackItem( newID, trackType, trackEntries, event, position ) {
+        console.log("addTrackItem, trackType: " + trackType);
+
+        var newObj = $("<div></div>", {
+            class: 'actuatorCommand ui-widget-content',
+            id: newID,
+        });
+
+        var trackObj = $('#' + trackType + 'Track');
+        var timeline = $('#TimeLine');
+        var trackWidth = timeline.width();
+        var pixelsPerMS = maxDurationMS / trackWidth;
+
+        trackObj.append(newObj);
+
+        newObj.css('left', position + 'px');
+        newObj.width( defaultDurationMS / pixelsPerMS );
+
+        newObj.append('<button id="' + newID + '_closeButton"; style="float:right">x</button><h3>' + trackType + '</h3>');
+
+        newObj.draggable({ containment: '#' + trackType + 'Track', scroll: false, axis: "x" });
+        newObj.selectable();
+
+        console.log('newID: ' + newID + ', trackEntries: ' + trackEntries);
+
+        trackEntries[trackEntries.length] = newObj;
+
+        var loopVal = 1;
+        if( trackType == 'purr' )
+        {
+            loopVal = 65535;
+        }
+
+        idToCmdMap[newID] = {
+            "addr":trackType.toLowerCase(),
+            "delay":0,
+            "loop":loopVal,
+            "setPoints":[defaultDurationMS,0]
+        };
+
+        newObj.mouseenter(function( event ) {
+            event.stopPropagation();
+            // console.log(this.id + ' enter event');
+            $('#' + this.id + '_closeButton').css('display', 'block ');
+            showTrackCreationHint = false;
+        });
+
+        newObj.mouseleave(function( event ) {
+            event.stopPropagation();
+            // console.log(this.id + ' leave event');
+
+            if( selectedCmdID != this )
+            {
+                $('#' + this.id + '_closeButton').css('display', 'none');
+            }
+            showTrackCreationHint = true;
+        });
+
+        newObj.click(function( event ) {
+            event.stopPropagation();
+
+            setselectedCmdID(this.id);
+            var index = trackEntries.indexOf(newObj);
+
+            $('#' + this.id + '_closeButton').css('display', 'block ');
+            console.log(this.id + " clicked, trackEntries.length: " + trackEntries.length + ", index: " + index);
+        });
+
+        newObj.on('click', '#' + newID + '_closeButton', function( event ) {
+            event.stopPropagation();
+
+            var index = trackEntries.indexOf(newObj);
+
+            console.log(this.id + " x clicked");
+
+
+            if (index > -1) {
+                trackEntries.splice(index, 1);
+                newObj.remove();
+                showTrackCreationHint = true;
+            }
+        });
+
+
+        setselectedCmdID(newObj.id);
+
+        $('#saveButton').prop('disabled',false);
+
+        console.log("trackEntries.length: " + trackEntries.length + ", index of " + newID + ": " + trackEntries.indexOf(newObj));
+  }
+
+  $(function() {
+    $(".actuatorTrack").click(function( event ) {
+
+        var name = $(this).attr('name');
+
+        if( trackCreationHint.css('display') != 'none' )
+        {
+
+            if( !(name in trackCounts ) )
+            {
+                trackCounts[name] = 0;
+            }
+
+            if( !(name in trackLists ) )
+            {
+                trackLists[name] = [];
+            }
+
+            trackCounts[name]++;
+            var newID = name + trackCounts[name];
+
+//            console.log('name: ' + name + ', newID: ' + newID + ", trackCounts[name]: " + trackCounts[name])
+
+            addTrackItem( newID, name, trackLists[name], event, trackCreationHint.position().left);
+            trackCreationHint.css("display", "none");
+            trackCreationHint.remove();
+
+            setselectedCmdID(newID);
+        }
+    });
+  });
+
+
+    $(function(){
+        $( ".actuatorTrack" ).mouseenter(
+          function() {
+            //console.log("mouseenter in actuatorTrack");
+
+            event.stopPropagation();
+          }
+
+        );
+
+        $( ".actuatorTrack" ).mousemove(
+            function() {
+                //console.log("mousemove in actuatorTrack");
+                var timeline = $('#TimeLine');
+                var sweep = $('#timeLineSweep');
+                var trackWidth = timeline.width();
+                var pixelsPerMS = maxDurationMS / trackWidth;
+
+                if( sweepMouseDown ){
+                    $('#currBehTime').val( Math.round(sweep.position().left * pixelsPerMS) );
+                }
+                else if( showTrackCreationHint )
+                {
+
+                    var trackObj = $(this);
+                    var width = trackCreationHint.width();
+                    var leftBound = trackObj.position().left + parseInt(trackObj.css('padding'));
+                    var rightBound = leftBound + trackObj.width() - width;
+                    var internalMouseX = event.clientX - trackObj.offset().left + leftBound;
+
+                    var name = $(this).attr('name');
+                    var spaceToAdd = true;
+
+                    if( name in trackLists )
+                    {
+                        var leftOfMouse = -1;
+                        var rightOfMouse = 99999;
+                        leftOfMouseIndex = -1;
+                        rightOfMouseIndex = -1;
+                        spaceToAdd = false; //assume no space if any items in the track.
+                        //now see if we are hovering over a spot with enough room to add:
+                        for (var i = 0; i < trackLists[name].length; i++) {
+                            var temp = trackLists[name][i];
+                            var tempLeft = temp.offset().left;
+                            var tempRight = temp.offset().right;
+
+                            if( temp.offset().left + temp.width() < internalMouseX && temp.offset().left + temp.width() > leftOfMouse ) {
+                                leftOfMouse = temp.offset().left + temp.width();
+                                leftOfMouseIndex = i;
+                            }
+
+                            if( temp.offset().left > internalMouseX && temp.offset().left < rightOfMouse ) {
+                                rightOfMouse = temp.offset().left;
+                                rightOfMouseIndex = i;
+                            }
+                        };
+
+                        if( leftOfMouseIndex >= 0 ) {
+                            leftBound = leftOfMouse;
+                        }
+
+                        if( rightOfMouseIndex >= 0 ) {
+                            rightBound = rightOfMouse;
+                        }
+                    }
+
+                    $(this).append(trackCreationHint);
+                    trackCreationHint.css("display", "block");
+
+                    var newX = Math.max( leftBound, ( internalMouseX - width / 2 ))
+                    newX = Math.min( rightBound, newX);
+
+                    // console.log('internalMouseX: ' + internalMouseX + ', leftBound: ' + leftBound + ', rightBound: ' + rightBound);
+
+                    trackCreationHint.css("left", newX + "px");
+                //            trackCreationHint.width(rightBound-leftBound);
+
+
+                    if( trackCreationHint.offset().left - trackCreationHint.width() / 2 <= leftBound || trackCreationHint.offset().left + trackCreationHint.width() >= rightBound ) {
+                //                trackCreationHint.css("display", "none");
+                //                trackCreationHint.remove();
+                    }
+                }
+                else
+                {
+                    trackCreationHint.css("display", "none");
+                    trackCreationHint.remove();
+                }
+            }
+        );
+
+        $( ".actuatorTrack" ).mouseleave(
+          function() {
+            //console.log("mouseleave in actuatorTrack");
+            trackCreationHint.css("display", "none");
+            trackCreationHint.remove();
+          }
+        );
+
+
+    });
+
+
+    $(function(){
+        $( "#behaviourEditorPlayButton" ).click(
+          function() {
+            var setPoints = [];
+            setPoints[0] = $( "#durationSlider" ).slider( "value" );
+            setPoints[1] = Math.round( 65535 * $( "#positionSlider" ).slider( "value" ) / 100 )
+
+            pauseBehaviour();
+
+            $( "#behaviourEditorPlayButton" ).prop('disabled',true);
+            setTimeout(function(){
+                $( "#behaviourEditorPlayButton" ).prop('disabled',false);
+            }, setPoints[0]);
+
+            sendSetPointCommand($( "#actuatorType" ).val(), parseInt($( "#delay" ).val()), parseInt($( "#loop" ).val()), setPoints)
+          }
+
+        );
+    });
+
+    function updateTimeLineControls()
+    {
+        if( behaviourPlaying ){
+            $('#tracksPlayButton').html('<span class="glyphicon glyphicon-pause" aria-hidden="true"></span> Pause');
+        }
+        else
+        {
+            $('#tracksPlayButton').html('<span class="glyphicon glyphicon-play" aria-hidden="true"></span> Play');
+        }
+    }
+
+    $(function(){
+        $( "#tracksPlayButton" ).click(
+            function() {
+                currBehaviour = getBehaviourJSON();
+//                console.log(JSON.stringify(currBehaviour,null,4));
+
+                if( currBehaviour.length > 0 )
+                {
+                    behaviourPlaying = !behaviourPlaying;
+
+    //                $('#tracksPlayButton span').toggleClass('glyphicon-pause', behaviourPlaying)
+    //                $('#tracksPlayButton span').toggleClass('glyphicon-play', !behaviourPlaying);
+                    updateTimeLineControls();
+
+                    if( behaviourPlaying ){
+
+
+                        var sweep = $('#timeLineSweep');
+                        var currSweepPos = sweep.position().left;
+                        for(currCmdIndex = 0 ; currCmdIndex < currBehaviour.length; currCmdIndex++ )
+                        {
+                            if( currBehaviour[currCmdIndex].cmdTime > currSweepPos ){
+                                break;
+                            }
+                        }
+
+                        console.log("currCmdIndex: " + currCmdIndex);
+
+
+                        playBehaviour();
+                    }
+                    else
+                    {
+                        pauseBehaviour();
+                    }
+                }
+                else
+                {
+                    behaviourPlaying = false;
+                }
+            }
+        );
+
+        $( "#tracksStopButton" ).click(
+            function() {
+                stopBehaviour();
+            }
+        );
+    });
+
+    function pauseBehaviour()
+    {
+        $('#timeLineSweep').stop();//true, true);
+        behaviourPlaying = false;
+        updateTimeLineControls();
+    }
+
+    function stopBehaviour()
+    {
+        var timeline = $('#TimeLine');
+        behaviourPlaying = false;
+        currCmdIndex = 0;
+        updateTimeLineControls();
+        $('#timeLineSweep').stop(true, true);
+        $('#timeLineSweep').css('left', $('.actuatorTrack').position().left);
+        $('#currBehTime').val( 0 );
+    }
+
+    function playBehaviour()
+    {
+        if( behaviourPlaying )
+        {
+
+            var sweep = $('#timeLineSweep');
+            var currSweepPos = sweep.position().left;
+
+
+
+            var timeline = $('#TimeLine');
+            var trackWidth = timeline.width();
+            var pixelsPerMS = maxDurationMS / trackWidth;
+            var lastCmd = currBehaviour[currBehaviour.length - 1];
+
+            var targetPos = lastCmd.cmdTime + ( lastCmd.setPoints[0] / pixelsPerMS )
+            var distance = targetPos - currSweepPos - parseInt(timeline.css('padding'))// + currCmd.setPoints[0],
+            var animDuration = distance * pixelsPerMS;
+
+
+            sweep.animate({
+                left: "+=" + distance,
+                },
+                {
+                    duration: animDuration,
+                    easing: 'linear',
+                    progress: function(a, p, c ) {
+                        var pos = sweep.position().left;
+
+                        $('#currBehTime').val( Math.round(pos * pixelsPerMS) );
+                        if( currCmdIndex < currBehaviour.length && pos > currBehaviour[currCmdIndex].cmdTime )
+                        {
+                            var currCmd = currBehaviour[currCmdIndex];
+                            sendSetPointCommand(currCmd.addr, currCmd.delay, currCmd.loop, currCmd.setPoints);
+                            console.log('sent cmd: ' + currCmd.addr);
+                            currCmdIndex++;
+                        }
+                    },
+                    complete: function() {
+                        console.log('animation complete');
+                    }
+            });
+        }
+    }
+
+    function getBehaviourJSON()
+    {
+        var tracks = $('.actuatorTrack');
+
+        var list = tracks.find('.actuatorCommand');
+        var sortedList = list.sort(function (a, b) {
+            aPos = $('#' + a.id).position().left;
+            bPos = $('#' + b.id).position().left;
+            return +aPos - +bPos;
+        });
+
+
+        var cmdList = [];
+
+        for( var i = 0; i < sortedList.length; i++ )
+        {
+            var data = idToCmdMap[sortedList[i].id];
+            var currTime = $('#' + sortedList[i].id).position().left;
+            data.cmdTime = currTime;
+            cmdList[i] = data;
+        }
+
+        return cmdList;
+    }
+
+    function sendSetPointCommand(address, delay, loop, setPoints) {
+
+        // console.log("addr: " + address + ", delay: " + delay + ", loop: " + loop + ", setPoints: " + setPoints);
+        // console.log("json: " + JSON.stringify({"addr" : address, "delay" : delay, "loop" : loop, "setPoints" : setPoints}))
+
+        $.ajax
+        ({
+            type: "POST",
+            //the url where you want to sent the userName and password to
+            url: location.href + 'setpoint',
+            dataType: 'json',
+            async: true,
+            //json object to sent to the authentication url
+            data: JSON.stringify({"addr" : address, "delay" : delay, "loop" : loop, "setPoints" : setPoints}),
+            success: function () {
+                console.log('successfully sent setpoint command, data: ' + data);
+            }
+        })
+    };
+
+    //One of too many initialization functions, could find them all and put them together, or split up and call each function in a tighter
+    //init routine
+    $(function(){
+        $( "#saveButton" ).click(
+            function() {
+                var files = $( "#openBehaviourButton" )[0].files;
+
+                if( files.length != 0 )
+                {
+                    saveBehaviour(files[0].name, $('#behaviourName').val(), JSON.stringify(getBehaviourJSON()), false, false);
+                }
+                else
+                {
+                    alert('Please provide a file to save the behaviours in!');
+                }
+            }
+        );
+
+        $( "#openBehaviourButton" ).change(
+            function() {
+
+                console.log('openBehaviourButton, file: ' + $( "#openBehaviourButton" )[0].files[0].name )
+                loadBehaviourSet($( "#openBehaviourButton" )[0].files[0].name);
+            }
+        );
+
+        //default
+        loadBehaviourSet('defaults');
+        clearBehaviour();
+
+        $('.gestureControlButton').click(
+            function(){
+                var gestureName = $(this).attr('id').replace('_button','');
+                console.log('gesture ' + gestureName + ' clicked');
+                setCurrBehaviour(gestureToBehMap[gestureName]);
+                $( "#tracksPlayButton" ).click();
+            }
+        );
+
+        // setInterval(function(){
+        //     console.log('curr gesture: ' + recognizedGesture);
+        //     getCurrentGesture();
+        // }, 1000);
+
+    });
+
+    function refreshBehaviourLists()
+    {
+        $('.behaviourSelector').remove();
+
+        $.each( $('.gestureControl'), function( i, obj ) {
+            var selectObj = $('<select>').attr({
+            'name':obj.id,
+            'id':obj.id + '_selector',
+            'class':'behaviourSelector overflow'
+            }).appendTo(obj);
+
+            selectObj.selectmenu({
+                change: function( event, data ) {
+                    if( $(this).attr('id') == 'currBehaviourSelector_selector' )
+                    {
+                        setCurrBehaviour(behNameToCmdListMap[data.item.value]);
+                    }
+                    else
+                    {
+                        var gestureName = $(this).attr('id').replace('_selector','');
+                        console.log('gestureName: ' + gestureName);
+                        gestureToBehMap[gestureName] = behNameToCmdListMap[data.item.value];
+                    }
+                }
+            });
+        });
+
+        $('<option>').html('').appendTo('.behaviourSelector');
+        $.each( behNameToCmdListMap, function( key, value ) {
+            $('<option>').attr({'value':'' + key + ''}).html(key).appendTo('.behaviourSelector');
+        });
+
+    };
+
+    function clearBehaviour()
+    {
+        $('#saveButton').prop('disabled',true);
+
+        stopBehaviour();
+        $('.actuatorCommand').remove();
+
+
+        selectedCmdID = null;
+        prevSelectedCmdID = null;
+        trackLists = {};
+        trackCounts = {};
+        idToCmdMap = {};
+
+        currBehaviour = [];
+    }
+
+    function setCurrBehaviour(behaviour)
+    {
+        if( behaviour === null || behaviour === undefined )
+            return;
+
+        clearBehaviour();
+        currBehaviour = behaviour;
+        for( var i = 0; i < currBehaviour.length; i++ )
+        {
+            cmd = currBehaviour[i];
+
+            var name = cmd.addr;
+
+            if( !(name in trackCounts ) )
+            {
+                trackCounts[name] = 1;
+            }
+
+            if( !(name in trackLists ) )
+            {
+                trackLists[name] = [];
+            }
+
+            var newID = name + trackCounts[name]++;
+
+//            console.log('name: ' + name + ', newID: ' + newID + ", trackCounts[name]: " + trackCounts[name])
+
+            addTrackItem( newID, name, trackLists[name], event, cmd.cmdTime);
+
+            idToCmdMap[newID] = cmd;
+        }
+
+        trackCreationHint.css("display", "none");
+        trackCreationHint.remove();
+    }
+
+    function saveBehaviour(fileName, behaviourName, behaviourStr, overwriteFile, overwriteBehaviour) {
+
+        // console.log("addr: " + address + ", delay: " + delay + ", loop: " + loop + ", setPoints: " + setPoints);
+        // console.log("json: " + JSON.stringify({"addr" : address, "delay" : delay, "loop" : loop, "setPoints" : setPoints}))
+
+        if( behaviourName === '' )
+        {
+            alert('Please provide a behaviourName for the behaviour!');
+            return;
+        }
+
+        $.ajax
+        ({
+            type: "POST",
+            //the url where you want to sent the userName and password to
+            url: location.href + 'savebehaviour',
+            dataType: 'text',
+            async: true,
+            //json object to sent to the authentication url
+            data: JSON.stringify({  'FileName' : fileName,
+                                    'BehaviourName' : behaviourName,
+                                    'Data' : behaviourStr,
+                                    'OverwriteFile' : overwriteFile,
+                                    'OverwriteBehaviour' : overwriteBehaviour
+                                }),
+            success: function (msg, status, jqXHR) {
+                console.log("msg: " + msg)
+
+                if( msg === 'overwriteFile' )
+                {
+                    console.log('verifying file overwrite');
+                    if( confirm('File "' + fileName + '" already exists, are you sure you want to overwrite it?') )
+                    {
+                        saveBehaviour(fileName, behaviourName, behaviourStr, true, overwriteBehaviour);
+                    }
+                }
+                else if( msg === 'overwriteBehaviour' )
+                {
+                    console.log('verifying behaviour overwrite');
+                    if( confirm('Behaviour "' + behaviourName + '" already exists, are you sure you want to overwrite it?') )
+                    {
+                        saveBehaviour(fileName, behaviourName, behaviourStr, overwriteFile, true);
+                    }
+                }
+                else
+                {
+                    console.log('successfully saved behaviour: ' + behaviourName);
+                }
+            }
+        })
+    };
+
+    function loadBehaviourSet(behaviourName) {
+
+        // console.log("addr: " + address + ", delay: " + delay + ", loop: " + loop + ", setPoints: " + setPoints);
+        // console.log("json: " + JSON.stringify({"addr" : address, "delay" : delay, "loop" : loop, "setPoints" : setPoints}))
+
+        $.ajax
+        ({
+            type: "POST",
+            //the url where you want to sent the userName and password to
+            url: location.href + 'loadbehaviour',
+            dataType: 'text',
+            async: true,
+            //json object to sent to the authentication url
+            data: behaviourName,
+            success: function (msg, status, jqXHR) {
+
+                if( msg.length > 0 )
+                {
+                    behNameToCmdListMap = {};
+//                    console.log('default behaviours: ' + msg);
+                    var jsonObj = jQuery.parseJSON(msg);
+
+                    // console.log('read behaviours: ' + JSON.stringify(jsonObj,null,4));
+
+                    $.each( jsonObj, function( i, behObj ) {
+                        behNameToCmdListMap[behObj.Name] = behObj.Data;
+//                        console.log('behObj.Name: ' + behObj.Name);
+//                        console.log('behObj.Data: ' + JSON.stringify(behObj.Data,null,4));
+                    });
+
+                    refreshBehaviourLists();
+                }
+            }
+        })
+    };
+
+    function getCurrentGesture() {
+        $.ajax
+        ({
+            type: "POST",
+            //the url where you want to sent the userName and password to
+            url: location.href + 'gesture',
+            dataType: 'text',
+            async: true,
+            //json object to sent to the authentication url
+            data: 'whatever',
+
+            success: function (msg, status, jqXHR) {
+                recognizedGesture = msg;
+            }
+        })
+    };
+    // breathe
+    // Sends single breath to cuddlebot
+    function breathe() {
+        sendSetPointCommand("ribs",0,1,[1000,0]);
+        console.log("ribs",0,1,[1000,0]);
+    }
+
+    // Breathing actions for Laura's study
+    var breathing;
+    // startBreathing
+    // Loops the breathing function an infinite number of times
+    // @param duration : the duration of the wait between breathe() actions
+    // @note : the duration should be at least ~2 seconds
+    function startBreathing(duration) {
+        breathing = setInterval(function () {
+            breathe();
+        }, duration);
+    }
+
+    // stopBreathing
+    // Stops the infinite breathing loop
+    function stopBreathing() {
+        clearInterval(breathing);
+    }
+
+    // breathingLoop
+    // Loops the breathing function a finite number of times
+    // @param times : number of times you want the breathing to loop
+    // @param duration : the duration of the wait between breathe() actions
+    // @note : the duration should be at least ~2 seconds
+    function breathingLoop(times,duration){
+        for (var i=0;i<duration;i++) {
+            setTimeout(function() {
+                	breathe();
+                },i*duration);
+        }
+    }
+
+    </script>
+</head>
+<body>
+    <div class='container-fluid'>
+        <div id="BehaviourEditor" class='col-md-3'>
+            <div class='container-fluid' style='border:2px solid #ccc;'>
+                <h2>Behaviour Editor</h2>
+                <p>
+                    <label for="actuatorType">Actuator:</label>
+                    <input type="text" id="actuatorType" readonly style="border:0; color:#f6931f; font-weight:bold;">
+                </p>
+                <p>
+                    <label for="delay">Delay:</label>
+                    <input type="number" id="delay" style="color:#f6931f; font-weight:bold;">
+                </p>
+                <p>
+                    <label for="loop">Loop:</label>
+                    <input type="number" id="loop" style="color:#f6931f; font-weight:bold;">
+                </p>
+                <p>Position</p>
+                <div id="positionSlider"></div>
+                <p>
+                    <label for="durationValue">Duration:</label>
+                    <input type="text" id="durationValue" readonly style="border:0; color:#f6931f; font-weight:bold;">
+                </p>
+                <div id="durationSlider"></div>
+                <p>
+                    <button id="behaviourEditorPlayButton" class='btn btn-default btn-lg'>
+                        <span class="glyphicon glyphicon-play" aria-hidden="true"></span> Play
+                    </button>
+                </p>
+            </div>
+            <div class='container-fluid'>
+
+                <div class='gestureControl' id='notouch'>
+                    <button id='notouch_button' class='gestureControlButton btn btn-primary btn-lg' style='width:150px'>No Touch</button>
+                </div>
+                <div class='gestureControl' id='constant'>
+                    <button id='constant_button' class='gestureControlButton btn btn-primary btn-lg' style='width:150px'>Constant</button>
+                </div>
+                <div class='gestureControl' id='rub'>
+                    <button id='rub_button' class='gestureControlButton btn btn-primary btn-lg' style='width:150px'>Rub</button>
+                </div>
+                <div class='gestureControl' id='scratch'>
+                    <button id='scratch_button' class='gestureControlButton btn btn-primary btn-lg' style='width:150px'>Scratch</button>
+                </div>
+                <div class='gestureControl' id='stroke'>
+                    <button id='stroke_button' class='gestureControlButton btn btn-primary btn-lg' style='width:150px'>Stroke</button>
+                </div>
+                <div class='gestureControl' id='tickle'>
+                    <button id='tickle_button' class='gestureControlButton btn btn-primary btn-lg' style='width:150px'>Tickle</button>
+                </div>
+                <div class='gestureControl' id='pat'>
+                    <button id='pat_button' class='gestureControlButton btn btn-primary btn-lg' style='width:150px'>Pat</button>
+                </div>
+
+            </div>
+        </div>
+        <div class='col-md-9'>
+            <div class='container-fluid'>
+                <div class='col-md-12'>
+                    <p>
+
+                        <div class='container-fluid'>
+                            <div class='col-md-4'>
+                                <input type='file' id="openBehaviourButton" class='btn btn-default btn-lg'>
+                            </div>
+                            <div class='col-md-2'>
+                                <label for="behaviourName">Behaviour Name:</label>
+                                <input type="text" id="behaviourName" style="color:#f6931f; font-weight:bold;">
+                            </div>
+                            <div class='col-md-2'>
+                                <button id="saveButton" class='btn btn-default btn-lg'>
+                                    <span class="glyphicon glyphicon-save" aria-hidden="true"></span> Save
+                                </button>
+                            </div>
+                        </div>
+                        <label for="currBehSelector">Current Behaviour:</label>
+                        <div class='gestureControl' id='currBehaviourSelector' style='color:#f6931f; font-weight:bold; border:0; width:auto'>
+                        </div>
+
+
+                    </p>
+                </div>
+            </div>
+            <div id="BehaviourTracks" class='container-fluid'>
+                <div id="TimeLine" class="col-md-12">
+                    <div id="timeLineSweep" class='timeLineSweep'>
+                    </div>
+
+                    <div id="purrTrack" name='purr' class='actuatorTrack'></div>
+
+                    <div id="ribsTrack" name='ribs' class='actuatorTrack'></div>
+
+                    <div id="headxTrack" name='headx' class='actuatorTrack'></div>
+
+                    <div id="headyTrack" name='heady' class='actuatorTrack'></div>
+
+                    <div id="spineTrack" name='spine' class='actuatorTrack'></div>
+                </div>
+            </div>
+            <div class='container-fluid'>
+                <div class='col-md-12'>
+                    <p>
+                        <button id="tracksPlayButton" class='btn btn-default btn-lg'>
+                            <span class="glyphicon glyphicon-play" aria-hidden="true"></span> Play
+                        </button>
+                        <button id="tracksStopButton" class='btn btn-default btn-lg'>
+                            <span class="glyphicon glyphicon-stop" aria-hidden="true"></span> Stop
+                        </button>
+
+
+                        <label for="currBehTime">Time:</label>
+                        <input type="number" id="currBehTime" readonly style="border:0; color:#f6931f; font-weight:bold;">
+
+                    </p>
+                </div>
+            </div>
+        </div>
+    </div>
+</body>
+</html>
